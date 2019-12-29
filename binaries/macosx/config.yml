@@ -22,4 +22,9 @@ endpoints:
   - m.root-servers.net
   - 8.8.8.8
   - 8.8.4.4
-  
+tcp_endpoints:
+  - google.com:80
+  - rust-lang.org:80
+  - github.com:443
+  - azure.microsoft.com:443
+  - aws.amazon.com:443

@@ -1,14 +1,13 @@
 #[macro_use]
 extern crate serde_derive;
-extern crate chrono;
-extern crate docopt;
+extern crate clap;
 extern crate futures;
 extern crate serde;
 extern crate serde_yaml;
 extern crate tokio;
 extern crate tokio_ping;
 
-use docopt::Docopt;
+use clap::{App, Arg};
 use futures::{Future, Stream};
 use std::fs::File;
 use std::io::Read;
@@ -21,31 +20,26 @@ use tokio::timer::Interval;
 
 mod networker;
 mod structs;
+mod tsdb;
 
 const CONFIG: &str = "./config.yml";
 
-const USAGE: &'static str = "
-cloud-latency
-
-Usage:
-
-  cloud-latency  [--config=<path_to/config.yml>]
-
-Options:
-  -h --help     Show this screen.
-
-";
-
 fn main() {
     // CLI arg parse
-    let args = Docopt::new(USAGE)
-        .and_then(|dopt| dopt.parse())
-        .unwrap_or_else(|e| e.exit());
-    let mut config_location = args.get_str("--config");
+    let args = App::new("cloud-latency")
+        .arg(
+            Arg::with_name("config")
+                .short("c")
+                .long("config")
+                .hidden_short_help(true)
+                .value_name("FILE")
+                .help("Path to the config.yml file (defaults to ./config.yml)"),
+        )
+        .get_matches();
+    // Print the values from the user args or the default setter
+    let config_location = args.value_of("config").unwrap_or(CONFIG);
+    println!("Using configuration file: {}", config_location);
 
-    if config_location.is_empty() {
-        config_location = CONFIG;
-    };
     // If the config.yml file does not exist in the specified location exit(0).
     if !file_exists(config_location) {
         println!(
@@ -56,12 +50,10 @@ fn main() {
     }
     // deserialize configuration data from the yaml file
     let config = get_config(CONFIG);
-
-    let fut = tokio_ping::Pinger::new()
+    let icmp_fut = tokio_ping::Pinger::new()
         .map_err(|e| panic!("{:?}", e))
         .and_then(move |pinger| thread_interval(pinger, config));
-
-    tokio::run(fut.map_err(|e| panic!("{:?}", e)));
+    tokio::run(icmp_fut.map_err(|e| panic!("{:?}", e)));
 }
 
 // Open and deserialize the yml config file in ./config.yml
@@ -94,15 +86,18 @@ fn thread_interval(
     pinger: tokio_ping::Pinger,
     config: structs::Config,
 ) -> Box<dyn Future<Item = (), Error = ()> + Send> {
-    // let config = get_config(CONFIG);
     println!("Configuration is as follows:");
     println!("- grafana server: {}", config.grafana_address);
     println!("- grafana port: {}", config.grafana_port);
     println!("- test interval (sec): {}", config.test_interval);
     println!("- tsdb prefix: {}", config.tsdb_prefix);
-    println!("- endpoints to be monitored:");
+    println!("- ICMP endpoints to be monitored:");
     for name in config.endpoints.iter() {
         println!("{}", name);
+    }
+    println!("- TCP endpoints to be monitored:");
+    for tcp_name in config.tcp_endpoints.iter() {
+        println!("{}", tcp_name);
     }
     let interval = Interval::new_interval(Duration::from_secs(config.test_interval));
     Box::new(

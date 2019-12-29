@@ -1,80 +1,92 @@
+use crate::structs;
+use crate::structs::{PROTO_ICMP, PROTO_TCP};
+use crate::tsdb;
+
 use dns_lookup::lookup_host;
 use futures::Future;
-use std::io::prelude::*;
 use std::net::IpAddr;
-use std::net::TcpStream;
-
-use crate::structs;
+use std::net::{SocketAddr, TcpStream};
+use std::time::{Duration, Instant};
 
 // spawn the threads for the async pings for each endpoint
 pub fn measure_latency(pinger: tokio_ping::Pinger, config: structs::Config) {
-    // Iterate over the targets
-    for endp in config.endpoints.iter() {
-        let ip_lookup = resolve_host(endp);
-        let ip_v4 = ip_lookup.unwrap();
-        let endpoint_name = endp.to_string().clone();
-        let config_copy = config.clone();
-        let ping: tokio_ping::PingFuture = pinger.chain(ip_v4).send();
-        tokio::spawn(
-            ping.and_then(move |resp| {
-                if let Some(delay) = resp {
-                    println!(
-                        "Target: {:?} Latency: {:?}ms",
-                        endpoint_name,
-                        delay.as_millis(),
-                    );
-                    write_tsdb(&config_copy, endpoint_name, delay);
-                }
-                Ok(())
-            })
-            .map_err(|e| {
-                eprintln!("{:?}", e);
-            }),
-        );
-    }
-}
-
-// send the stream containing the measurements to the carbon socket
-fn write_stream(
-    stream: &mut std::net::TcpStream,
-    hostname: &str,
-    probe_and_value: String,
-    timestamp: i64,
-) {
-    let content = format!("{}.{} {}\n", hostname, probe_and_value, timestamp);
-    // println!("Debug: writing tsdb data -> {}", content); // Uncomment to debug carbon writes
-    let _ = stream.write(&content.as_bytes());
-}
-
-// compose the stream containing the measurements to be sent to the tsdb
-fn write_tsdb(config: &structs::Config, endp: String, time: std::time::Duration) {
-    let dt = chrono::Utc::now();
-    let timestamp = dt.timestamp();
-    let grafana_svr = format!("{}:{}", config.grafana_address, config.grafana_port);
-    let socker_addr: &str = grafana_svr.as_str();
-    // replace all "." with "_" to record properly in the tsdb
-    let endpoint_name = str::replace(&endp, ".", "-");
-    let tsdb_prefix = str::replace(config.tsdb_prefix.as_str(), ".", "-");
-
-    match TcpStream::connect(socker_addr) {
-        Ok(mut stream) => {
-            write_stream(
-                &mut stream,
-                tsdb_prefix.as_str(),
-                format!("{} {}", endpoint_name, time.as_millis()),
-                // You can debug with a generic value using:
-                // format!("{} 543324500", endpoint_name),
-                timestamp,
+    if config.endpoints.is_empty() {
+        // Skip to the tcp monitoring threads if ICMP targets is empty
+        measure_tcp_latency(config);
+    } else {
+        // Iterate over the ICMP targets
+        for endp in config.endpoints.iter() {
+            let ip_lookup = resolve_host(endp);
+            let ip_v4 = ip_lookup.unwrap();
+            let endpoint_name = endp.to_string().clone();
+            let config_copy = config.clone();
+            let ping: tokio_ping::PingFuture = pinger.chain(ip_v4).send();
+            tokio::spawn(
+                ping.and_then(move |resp| {
+                    if let Some(delay) = resp {
+                        println!(
+                            "ICMP Target: {:?} Latency: {:?}ms",
+                            endpoint_name,
+                            delay.as_millis(),
+                        );
+                        tsdb::write_tsdb(&config_copy, endpoint_name, PROTO_ICMP, delay);
+                    }
+                    Ok(())
+                })
+                .map_err(|e| {
+                    eprintln!("{:?}", e);
+                }),
             );
         }
-        Err(e) => println!(
-            "Unable to connect to the Graphite server at {}: {:?} dropping this measurement",
-            grafana_svr, e
-        ),
+        // Call the tcp monitoring threads
+        measure_tcp_latency(config);
     }
 }
 
-// resolve a hostname to IpAddr
+// spawn the threads for the async TCP sockets for each endpoint
+pub fn measure_tcp_latency(config: structs::Config) {
+    if config.tcp_endpoints.is_empty() {
+        return;
+    }
+    // Iterate over the tcp targets
+    for tcp_endpoint in config.tcp_endpoints.iter() {
+        let p = String::from(":");
+        // Split on the ':' pattern
+        if tcp_endpoint.contains(&p) {
+            let mut split = tcp_endpoint.split(&p);
+            let ip_split = split.next().unwrap();
+            let port = split.next().unwrap();
+            let ip_lookup = resolve_host(ip_split);
+            let ip_v4 = ip_lookup.unwrap();
+            let endpoint_name = tcp_endpoint.to_string().clone();
+            let join_socket = format!("{}:{}", ip_v4.to_string(), port);
+            let sock_addr: SocketAddr =
+                join_socket.parse().expect("Unable to parse socket address");
+            let config_copy = config.clone();
+            let handle = std::thread::spawn(move || {
+                let instant_start = Instant::now();
+                if TcpStream::connect_timeout(&sock_addr, Duration::new(5, 0)).is_ok() {
+                    let instant_end = Instant::now();
+                    let delay = instant_end - instant_start;
+                    println!(
+                        "TCP Target: {:?} Latency: {:?}ms",
+                        endpoint_name,
+                        delay.as_millis()
+                    );
+                    // Send the measurement to the TSDB module for formmating and shipping
+                    tsdb::write_tsdb(&config_copy, endpoint_name, PROTO_TCP, delay);
+                } else {
+                    println!("Failed connection to {:?}", sock_addr);
+                }
+            });
+            handle.join().unwrap();
+        } else {
+            println!("Pattern to split on '{}' not found", p);
+        }
+    }
+}
+
+// resolve a hostname to std::net::IpAddr
 pub fn resolve_host(host: &str) -> Result<IpAddr, String> {
     match host.parse::<IpAddr>() {
         Ok(val) => Ok(val),
