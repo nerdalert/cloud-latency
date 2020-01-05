@@ -4,7 +4,7 @@ Cloud-Latency - Measure and Graph Network Latency written in Rust
 
 This project uses the same concept as [/nerdalert/cloud-bandwidth](https://github.com/nerdalert/cloud-bandwidth) of measuring performance metrics and writing them out to a TSDB backend and then visualizing them into Grafana. The primary difference is this measures latency to the specified targets and is written in Rust instead of Go.
 
-The round trip time of the probes are measured and then plotted into the TSB stack and visualized with Grafana. The RTT is measured via ICMP and/or TCP. Some endpoints are on networks filtering ICMP. In order to get around that, we can measure the time it takes to open a TCP socket on the remote host. All polling is multi-threaded using Rust concurrency runtimes.
+The round trip time of the probes are measured and then plotted into the TSDB stack and visualized with Grafana. The RTT is measured via ICMP and/or TCP. Some endpoints are on networks filtering ICMP. In order to get around that, we can measure the time it takes to open a TCP socket on the remote host. All polling is multi-threaded using Rust concurrency runtimes.
 
 ![](http://networkstatic.net/wp-content/uploads/2019/12/Cloud-Latency-sm.png)
 
